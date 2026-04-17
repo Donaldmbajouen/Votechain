@@ -1,13 +1,14 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from dependencies import get_current_user, get_db
 from models import Campaign, Candidate, User, Vote
 from schemas import VoteCreate, VoteRead
+from socket_manager import emit_vote_update
 
 router = APIRouter(prefix="/campaigns", tags=["Votes"])
 
@@ -21,8 +22,23 @@ def _extract_client_ip(request: Request) -> str:
     return "unknown"
 
 
+async def _build_results(campaign_id: int, db: Session) -> dict:
+    rows = db.execute(
+        select(Candidate.id, Candidate.name, func.count(Vote.id))
+        .select_from(Candidate)
+        .outerjoin(Vote, Vote.candidate_id == Candidate.id)
+        .where(Candidate.campaign_id == campaign_id)
+        .group_by(Candidate.id, Candidate.name)
+        .order_by(func.count(Vote.id).desc(), Candidate.name.asc())
+    ).all()
+
+    results = [{"candidate_id": r[0], "candidate_name": r[1], "votes": r[2]} for r in rows]
+    total = sum(r["votes"] for r in results)
+    return {"campaign_id": campaign_id, "total_votes": total, "results": results}
+
+
 @router.post("/{campaign_id}/vote", response_model=VoteRead, status_code=status.HTTP_201_CREATED)
-def cast_vote(
+async def cast_vote(
     campaign_id: int,
     payload: VoteCreate,
     request: Request,
@@ -37,10 +53,7 @@ def cast_vote(
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
     if candidate.campaign_id != campaign_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Candidate does not belong to this campaign",
-        )
+        raise HTTPException(status_code=400, detail="Candidate does not belong to this campaign")
 
     now = datetime.now(timezone.utc)
     if now < campaign.starts_at or now > campaign.ends_at:
@@ -52,10 +65,7 @@ def cast_vote(
         select(Vote).where(Vote.campaign_id == campaign_id, Vote.voter_ip == client_ip)
     )
     if existing_vote:
-        raise HTTPException(
-            status_code=400,
-            detail="This IP address has already voted in this campaign",
-        )
+        raise HTTPException(status_code=400, detail="This IP address has already voted in this campaign")
 
     vote = Vote(
         campaign_id=campaign_id,
@@ -68,9 +78,11 @@ def cast_vote(
         db.commit()
     except IntegrityError:
         db.rollback()
-        raise HTTPException(
-            status_code=400,
-            detail="This IP address has already voted in this campaign",
-        )
+        raise HTTPException(status_code=400, detail="This IP address has already voted in this campaign")
     db.refresh(vote)
+
+    # Emit realtime update to all clients watching this campaign
+    results = await _build_results(campaign_id, db)
+    await emit_vote_update(campaign_id, results)
+
     return vote

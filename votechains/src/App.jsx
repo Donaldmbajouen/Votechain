@@ -1,35 +1,42 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from '/vite.svg'
-import './App.css'
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
+import Navbar from './components/Navbar'
+import ProtectedRoute from './components/ProtectedRoute'
+import { AuthProvider, useAuth } from './context/AuthContext'
+import AdminDashboard from './pages/AdminDashboard'
+import CampaignList from './pages/CampaignList'
+import Login from './pages/Login'
+import Register from './pages/Register'
+import VotePage from './pages/VotePage'
 
-function App() {
-  const [count, setCount] = useState(0)
+function HomeRedirect() {
+  const { user } = useAuth()
+  if (!user) return <Navigate to="/login" replace />
+  if (user.role === 'admin') return <Navigate to="/admin" replace />
+  return <Navigate to="/campaigns" replace />
+}
 
+function Layout({ children }) {
   return (
     <>
-      <div>
-        <a href="https://vite.dev" target="_blank">
-          <img src={viteLogo} className="logo" alt="Vite logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
-      </div>
-      <h1>Vite + React</h1>
-      <div className="card">
-        <button onClick={() => setCount((count) => count + 1)}>
-          count is {count}
-        </button>
-        <p>
-          Edit <code>src/App.jsx</code> and save to test HMR
-        </p>
-      </div>
-      <p className="read-the-docs">
-        Click on the Vite and React logos to learn more
-      </p>
+      <Navbar />
+      {children}
     </>
   )
 }
 
-export default App
+export default function App() {
+  return (
+    <AuthProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route path="/register" element={<Register />} />
+          <Route path="/" element={<Layout><ProtectedRoute><HomeRedirect /></ProtectedRoute></Layout>} />
+          <Route path="/admin" element={<Layout><ProtectedRoute adminOnly><AdminDashboard /></ProtectedRoute></Layout>} />
+          <Route path="/campaigns" element={<Layout><ProtectedRoute><CampaignList /></ProtectedRoute></Layout>} />
+          <Route path="/campaigns/:id" element={<Layout><ProtectedRoute><VotePage /></ProtectedRoute></Layout>} />
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
+  )
+}
